@@ -1,44 +1,38 @@
-# Downloads folder
-downloads/
-
-# Virtual Environment
-venv/
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# IDE
+# Virtual Environment
+venv/
+env/
+bin/
+.env
+distlib-0.4.0.dist-info/
+Filelock-3.20.1.dist-info/
+pip
+pip-25.3.dist-info/
+setuptools-67.6.0.dist-info/
+virtualenv-20.35.4.dist-info/
+platformdirs-4.5.1.dist-info/
+
+# Downloads & Data
+downloads/
+cookies.txt
+cookies.sqlite
+*.mp3
+*.webm
+*.m4a
+*.opus
+
+# Local Config
+youtube_urls.txt
+
+# Temporary Setup Files
+_setup_tmp/
+get-pip.py
+virtualenv.pyz
+
+# IDEs
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
