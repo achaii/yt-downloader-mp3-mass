@@ -12,32 +12,33 @@ from pathlib import Path
 from typing import List, Optional
 import yt_dlp
 from colorama import Fore, Style, init
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # Initialize colorama untuk Windows
 init(autoreset=True)
 
-class YouTubeMp3Downloader:
-    def __init__(self, output_folder: str = "downloads"):
+class YouTubeDownloader:
+    MODE_MP3 = "audio"
+    MODE_VIDEO = "video"
+
+    def __init__(self, output_folder: str = "downloads", mode: str = MODE_MP3):
         """
-        Initialize downloader dengan folder output
+        Initialize downloader dengan folder output dan mode
         
         Args:
-            output_folder: Folder untuk menyimpan file MP3
+            output_folder: Folder untuk menyimpan file
+            mode: MODE_MP3 atau MODE_VIDEO
         """
         self.output_folder = Path(output_folder)
         self.output_folder.mkdir(exist_ok=True)
+        self.mode = mode
         
         # Cari FFmpeg
         self.ffmpeg_path = self._find_ffmpeg()
         
-        # Konfigurasi yt-dlp untuk kualitas audio terbaik
+        # Base configuration
         self.ydl_opts = {
-            'format': 'bestaudio/best',  # Ambil audio terbaik format apa saja
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',  # 192kbps adalah standarnya, 320 bisa bloated
-            }],
             'outtmpl': str(self.output_folder / '%(title)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
@@ -45,14 +46,39 @@ class YouTubeMp3Downloader:
             'ignoreerrors': True,
             'nocheckcertificate': True,
             'prefer_ffmpeg': True,
-            'keepvideo': False,  # Pastikan file asli dihapus
+            # Speed & Connection Optimization (MAXIMIZED)
+            'concurrent_fragment_downloads': 16,
+            'retries': 15,
+            'fragment_retries': 15,
+            'file_access_retries': 5,
+            'socket_timeout': 60,
+            'source_address': '0.0.0.0',
             # Anti-Bot Options
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
-            'sleep_interval': 3,
-            'max_sleep_interval': 10,
+            'sleep_interval': 1,
+            'max_sleep_interval': 3,
+            'quiet': True,  # Reduced noise for parallel downloads
+            'no_warnings': True,
         }
+
+        if self.mode == self.MODE_MP3:
+            # Konfigurasi untuk MP3
+            self.ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'keepvideo': False,
+            })
+        else:
+            # Konfigurasi untuk MP4 (Video)
+            self.ydl_opts.update({
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            })
 
         # Cek cookies.txt
         if os.path.exists("cookies.txt"):
@@ -65,7 +91,8 @@ class YouTubeMp3Downloader:
             print(f"{Fore.GREEN}✓ FFmpeg ditemukan: {self.ffmpeg_path}{Style.RESET_ALL}")
         else:
             print(f"{Fore.YELLOW}⚠ FFmpeg tidak ditemukan di PATH{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}  File akan didownload dalam format asli (mungkin bukan MP3){Style.RESET_ALL}")
+            if self.mode == self.MODE_MP3:
+                print(f"{Fore.YELLOW}  File akan didownload dalam format asli (mungkin bukan MP3){Style.RESET_ALL}")
     
     def _find_ffmpeg(self) -> Optional[str]:
         """Cari FFmpeg di sistem"""
@@ -115,19 +142,20 @@ class YouTubeMp3Downloader:
             print(f"{Fore.RED}✗ Error membaca file: {e}{Style.RESET_ALL}")
             return []
     
-    def download_single(self, url: str, index: int, total: int) -> bool:
-        """Download single video sebagai MP3"""
+    def download_single(self, url: str, index: int = 1, total: int = 1) -> bool:
+        """Download single video"""
+        label = "MP3" if self.mode == self.MODE_MP3 else "MP4"
         print(f"\n{Fore.CYAN}{'='*70}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[{index}/{total}] Memproses: {url}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}[{index}/{total}] Memproses ({label}): {url}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{'='*70}{Style.RESET_ALL}\n")
         
         try:
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 ydl.download([url])
             
-            # Post-Processing Safety Net:
-            # Jika yt-dlp gagal convert (sisa file webm/m4a), kita convert manual
-            self._ensure_mp3_conversion()
+            # Post-Processing Safety Net untuk MP3
+            if self.mode == self.MODE_MP3:
+                self._ensure_mp3_conversion()
 
             print(f"\n{Fore.GREEN}✓ Berhasil mendownload [{index}/{total}]{Style.RESET_ALL}\n")
             return True
@@ -147,14 +175,12 @@ class YouTubeMp3Downloader:
             ffmpeg_exe = shutil.which('ffmpeg')
         else:
             print(f"{Fore.RED}CRITICAL: FFmpeg tidak ditemukan. Tidak dapat mengkonversi ke MP3.{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}Tip: Install FFmpeg dan restart terminal.{Style.RESET_ALL}")
             return
 
         for file_path in self.output_folder.glob("*"):
             if file_path.suffix.lower() in audio_extensions:
                 mp3_path = file_path.with_suffix('.mp3')
                 
-                # Jika MP3 nya belum ada, kita convert
                 if not mp3_path.exists():
                     print(f"\n{Fore.YELLOW}⚠ Mengkonversi sisa file ke MP3: {file_path.name}{Style.RESET_ALL}")
                     try:
@@ -163,18 +189,12 @@ class YouTubeMp3Downloader:
                             '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k', 
                             '-y', str(mp3_path)
                         ]
-                        # Use shell=True specifically to help find executable on some Windows envs
                         subprocess.run(cmd, capture_output=True, check=True)
                         print(f"{Fore.GREEN}✓ Konversi Sukses.{Style.RESET_ALL}")
                         
-                        # Hapus file asli setelah sukses
                         try:
                             file_path.unlink()
                         except: pass
-                    except subprocess.CalledProcessError as e:
-                        print(f"{Fore.RED}✗ Gagal konversi (FFmpeg Error): {e}{Style.RESET_ALL}")
-                    except FileNotFoundError:
-                        print(f"{Fore.RED}✗ Gagal: FFmpeg exe tidak ditemukan di '{ffmpeg_exe}'{Style.RESET_ALL}")
                     except Exception as e:
                         print(f"{Fore.RED}✗ Gagal konversi: {e}{Style.RESET_ALL}")
                 else:
@@ -183,28 +203,31 @@ class YouTubeMp3Downloader:
                     except: pass
     
     def download_batch(self, urls: List[str]):
-        """Download multiple videos sebagai MP3"""
+        """Download multiple videos in parallel"""
         if not urls:
             print(f"{Fore.RED}✗ Tidak ada URL untuk didownload{Style.RESET_ALL}")
             return
         
         total = len(urls)
-        success_count = 0
-        failed_count = 0
+        label = "MP3" if self.mode == self.MODE_MP3 else "MP4"
         
         print(f"\n{Fore.MAGENTA}{'='*70}")
-        print(f"🎵 BATCH DOWNLOAD MODE 🎵")
-        print(f"{'='*70}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Total video: {total}")
-        print(f"Output folder: {self.output_folder.absolute()}{Style.RESET_ALL}\n")
+        print(f"🚀 PARALLEL BATCH DOWNLOAD MODE ({label}) 🚀")
+        print(f"{Fore.CYAN}Memproses {total} video secara simultan (Max 3 sekaligus)...")
+        print(f"{'='*70}{Style.RESET_ALL}\n")
         
-        for index, url in enumerate(urls, 1):
-            if self.download_single(url, index, total):
-                success_count += 1
-            else:
-                failed_count += 1
+        results = []
+        # Menggunakan 3 worker agar tidak terlalu agresif namun tetap cepat
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Map download_single ke semua url
+            futures = [executor.submit(self.download_single, url, i, total) for i, url in enumerate(urls, 1)]
+            for future in futures:
+                results.append(future.result())
+
+        success_count = sum(1 for r in results if r)
+        failed_count = total - success_count
         
-        self._print_summary(success_count, failed_count, total, "DOWNLOAD")
+        self._print_summary(success_count, failed_count, total, f"DOWNLOAD {label}")
 
     def convert_local_files(self):
         """Konversi file lokal non-MP3 ke MP3"""
@@ -216,10 +239,9 @@ class YouTubeMp3Downloader:
         if self.ffmpeg_path:
             ffmpeg_exe = str(Path(self.ffmpeg_path) / 'ffmpeg.exe')
 
-        # Check ffmpeg availability for subprocess
         try:
             subprocess.run([ffmpeg_exe, '-version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except:
             print(f"{Fore.RED}✗ FFmpeg tidak dapat dijalankan untuk konversi lokal.{Style.RESET_ALL}")
             return
 
@@ -233,7 +255,7 @@ class YouTubeMp3Downloader:
             return
 
         print(f"{Fore.CYAN}Ditemukan {len(audio_files)} file untuk dikonversi.{Style.RESET_ALL}")
-        confirm = input("Lanjutkan konversi? (y/n): ").strip().lower()
+        confirm = input("Lanjutkan konversi ke MP3? (y/n): ").strip().lower()
         if confirm != 'y': return
 
         success_count = 0
@@ -246,7 +268,7 @@ class YouTubeMp3Downloader:
             
             cmd = [
                 ffmpeg_exe, '-i', str(input_file), '-vn', '-ar', '44100', 
-                '-ac', '2', '-b:a', '320k', '-y', str(output_file)
+                '-ac', '2', '-b:a', '192k', '-y', str(output_file)
             ]
             
             try:
@@ -254,7 +276,6 @@ class YouTubeMp3Downloader:
                 print(f"{Fore.GREEN}✓ Berhasil{Style.RESET_ALL}")
                 try:
                     input_file.unlink()
-                    print(f"  File asli dihapus")
                 except: pass
                 success_count += 1
             except Exception as e:
@@ -275,36 +296,63 @@ class YouTubeMp3Downloader:
 def main():
     print(f"{Fore.MAGENTA}")
     print("╔════════════════════════════════════════════════════════════════════╗")
-    print("║          🎵 YOUTUBE MP3 DOWNLOADER & CONVERTER 🎵                ║")
+    print("║          🎵 YOUTUBE DOWNLOADER & CONVERTER 🎵                    ║")
     print("╚════════════════════════════════════════════════════════════════════╝")
     print(f"{Style.RESET_ALL}\n")
     
-    downloader = YouTubeMp3Downloader("downloads")
+    url_file = "youtube_urls.txt"
     
     while True:
         print("\nPilih Menu:")
-        print("1. Download dari youtube_urls.txt (Default)")
-        print("2. Konversi file lokal di folder 'downloads' ke MP3")
-        print("3. Keluar")
+        print(f"1. Download Batch (MP3) dari {url_file} (Default)")
+        print(f"2. Download Batch (Shorts/MP4) dari {url_file}")
+        print("3. Download Single URL (Manual Input)")
+        print("4. Konversi file lokal di folder 'downloads' ke MP3")
+        print("5. Keluar")
         
         choice = input("\nPilihan [1]: ").strip() or "1"
         
         if choice == "1":
-            url_file = "youtube_urls.txt"
+            downloader = YouTubeDownloader("downloads", mode=YouTubeDownloader.MODE_MP3)
             if not os.path.exists(url_file):
                 print(f"{Fore.RED}✗ File {url_file} tidak ditemukan!{Style.RESET_ALL}")
                 continue
             urls = downloader.read_urls_from_file(url_file)
             if urls:
                 downloader.download_batch(urls)
-            break # Exit after download in simple mode, or maybe loop? User request implies run once. Let's break.
+            break
         elif choice == "2":
-            downloader.convert_local_files()
+            downloader = YouTubeDownloader("downloads", mode=YouTubeDownloader.MODE_VIDEO)
+            if not os.path.exists(url_file):
+                print(f"{Fore.RED}✗ File {url_file} tidak ditemukan!{Style.RESET_ALL}")
+                continue
+            urls = downloader.read_urls_from_file(url_file)
+            if urls:
+                downloader.download_batch(urls)
             break
         elif choice == "3":
+            url = input("Masukkan URL YouTube: ").strip()
+            if not url: continue
+            print("Pilih Format: 1. MP3, 2. MP4")
+            fmt = input("Pilihan [1]: ").strip() or "1"
+            mode = YouTubeDownloader.MODE_MP3 if fmt == "1" else YouTubeDownloader.MODE_VIDEO
+            downloader = YouTubeDownloader("downloads", mode=mode)
+            downloader.download_single(url)
+            break
+        elif choice == "4":
+            downloader = YouTubeDownloader("downloads")
+            downloader.convert_local_files()
+            break
+        elif choice == "5":
             sys.exit(0)
         else:
             print("Pilihan tidak valid.")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{Fore.RED}Dibatalkan.{Style.RESET_ALL}")
 
 if __name__ == "__main__":
     try:
