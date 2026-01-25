@@ -143,7 +143,7 @@ class YouTubeDownloader:
             return []
     
     def download_single(self, url: str, index: int = 1, total: int = 1) -> bool:
-        """Download single video"""
+        """Download single video and save metadata"""
         label = "MP3" if self.mode == self.MODE_MP3 else "MP4"
         print(f"\n{Fore.CYAN}{'='*70}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}[{index}/{total}] Memproses ({label}): {url}{Style.RESET_ALL}")
@@ -151,8 +151,11 @@ class YouTubeDownloader:
         
         try:
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                ydl.download([url])
-            
+                # Extract info first to get metadata
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    self._save_metadata(info)
+
             # Post-Processing Safety Net untuk MP3
             if self.mode == self.MODE_MP3:
                 self._ensure_mp3_conversion()
@@ -163,6 +166,31 @@ class YouTubeDownloader:
         except Exception as e:
             print(f"\n{Fore.RED}✗ Gagal mendownload [{index}/{total}]: {e}{Style.RESET_ALL}\n")
             return False
+
+    def _save_metadata(self, info: dict):
+        """Save Title, Description, and Tags to a text file"""
+        title = info.get('title', 'Unknown Title')
+        description = info.get('description', 'No description available.')
+        tags = info.get('tags', [])
+        
+        # Sanitize filename
+        safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '.', '_')]).rstrip()
+        meta_filename = self.output_folder / f"{safe_title}_metadata.txt"
+        
+        try:
+            with open(meta_filename, 'w', encoding='utf-8') as f:
+                f.write(f"JUDUL: {title}\n")
+                f.write(f"{'='*50}\n")
+                f.write(f"TAGS: {', '.join(tags) if tags else 'None'}\n")
+                f.write(f"{'='*50}\n\n")
+                f.write(f"CAPTION/DESCRIPTION:\n\n{description}\n")
+            
+            # Since we're in a multi-threaded environment (parallel batch), 
+            # we use print with a lock if we wanted to be perfectly safe, 
+            # but for simplicity and since it's just a small success message:
+            print(f"{Fore.BLUE}ℹ Metadata disimpan: {meta_filename.name}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}⚠ Gagal menyimpan metadata: {e}{Style.RESET_ALL}")
 
     def _ensure_mp3_conversion(self):
         """Cek jika ada file non-MP3 tersisa dan paksa convert ke MP3"""
